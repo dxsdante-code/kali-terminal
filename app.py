@@ -1,119 +1,171 @@
-from flask import Flask, render_template, request, jsonify, abort
+"""
+Flask Terminal Demo - VersiÃ³n Segura + Lista para Railway
+=========================================================
+Mejoras de seguridad:
+  1. Lista BLANCA de comandos (no lista negra)
+  2. Sin shell=True - el input nunca toca la shell
+  3. Rate limiting por IP para evitar abuso
+  4. ValidaciÃ³n estricta del input (tipo, longitud)
+  5. Manejo de errores que no revela informaciÃ³n sensible
+  6. Headers de seguridad en todas las respuestas
+  7. Logging estructurado
+
+Fix para Railway:
+  - host="0.0.0.0"
+  - Puerto leÃ­do desde variable de entorno PORT
+"""
+
+from flask import Flask, render_template, request, jsonify
 from functools import wraps
 import subprocess
 import logging
+import secrets
 import time
 import os
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#  ConfiguraciÃ³n
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# â”€â”€ ConfiguraciÃ³n â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "cambia-esto-en-produccion")
+app.secret_key = secrets.token_hex(32)
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s | %(levelname)s | %(message)s"
 )
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#  Lista BLANCA de comandos permitidos
-#  Formato: "clave_ui": (["binario", "args..."], "descripciÃ³n")
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-COMANDOS_PERMITIDOS: dict[str, tuple[list[str], str]] = {
-    "fecha":     (["date"],               "Fecha y hora del sistema"),
-    "uptime":    (["uptime"],             "Tiempo activo del servidor"),
-    "espacio":   (["df", "-h"],           "Uso del disco"),
-    "memoria":   (["free", "-h"],         "Uso de la memoria RAM"),
-    "procesos":  (["ps", "aux", "--sort=-pcpu", "--no-headers", "-o", "pid,pcpu,pmem,comm"],
-                                          "Top procesos por CPU"),
-    "red":       (["ss", "-tuln"],        "Puertos y conexiones activas"),
-    "kernel":    (["uname", "-a"],        "InformaciÃ³n del kernel"),
-    "cpu":       (["lscpu"],              "InformaciÃ³n de la CPU"),
-    "whoami":    (["whoami"],             "Usuario actual"),
-    "env":       (["env"],                "Variables de entorno"),
+# â”€â”€ Rate Limiting (en memoria) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+RATE_LIMIT_WINDOW = 60      # segundos
+RATE_LIMIT_MAX    = 15      # peticiones por ventana por IP
+
+_rate_store: dict[str, list[float]] = {}
+
+def is_rate_limited(ip: str) -> bool:
+    now          = time.time()
+    window_start = now - RATE_LIMIT_WINDOW
+    timestamps   = [t for t in _rate_store.get(ip, []) if t > window_start]
+    _rate_store[ip] = timestamps
+    if len(timestamps) >= RATE_LIMIT_MAX:
+        return True
+    _rate_store[ip].append(now)
+    return False
+
+# â”€â”€ Lista BLANCA de comandos â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# El usuario solo elige una CLAVE â€” nunca escribe el binario real.
+
+ALLOWED_COMMANDS: dict[str, dict] = {
+    "date":     {"cmd": ["date"],            "desc": "Fecha y hora del sistema",      "timeout": 3},
+    "uptime":   {"cmd": ["uptime"],          "desc": "Tiempo encendido y carga",      "timeout": 3},
+    "whoami":   {"cmd": ["whoami"],          "desc": "Usuario actual",                "timeout": 3},
+    "hostname": {"cmd": ["hostname"],        "desc": "Nombre del host",               "timeout": 3},
+    "uname":    {"cmd": ["uname", "-a"],     "desc": "InformaciÃ³n del kernel",        "timeout": 3},
+    "df":       {"cmd": ["df", "-h"],        "desc": "Uso del disco",                 "timeout": 5},
+    "free":     {"cmd": ["free", "-h"],      "desc": "Uso de la memoria RAM",         "timeout": 3},
+    "ps":       {"cmd": ["ps", "aux"],       "desc": "Procesos activos",              "timeout": 5},
+    "env":      {"cmd": ["env"],             "desc": "Variables de entorno",          "timeout": 3},
+    "ls":       {"cmd": ["ls", "-lh", "/"],  "desc": "Archivos en raÃ­z del sistema",  "timeout": 3},
+    "netstat":  {"cmd": ["ss", "-tuln"],     "desc": "Puertos en escucha",            "timeout": 5},
+    "id":       {"cmd": ["id"],              "desc": "UID, GID y grupos del usuario", "timeout": 3},
 }
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#  Rate limiting simple en memoria
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-_rate_store: dict[str, list[float]] = {}
-RATE_LIMIT = 10        # peticiones
-RATE_WINDOW = 60       # segundos
+# â”€â”€ Headers de seguridad â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+@app.after_request
+def add_security_headers(response):
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"]        = "DENY"
+    response.headers["X-XSS-Protection"]       = "1; mode=block"
+    response.headers["Cache-Control"]          = "no-store"
+    return response
 
-def rate_limited(f):
+# â”€â”€ Decorador rate limit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+def rate_limit(f):
     @wraps(f)
     def wrapper(*args, **kwargs):
         ip = request.remote_addr or "unknown"
-        now = time.time()
-        hits = _rate_store.get(ip, [])
-        hits = [t for t in hits if now - t < RATE_WINDOW]
-        if len(hits) >= RATE_LIMIT:
-            logger.warning("Rate limit excedido para IP %s", ip)
-            return jsonify({"error": "Demasiadas peticiones. Espera un momento."}), 429
-        hits.append(now)
-        _rate_store[ip] = hits
+        if is_rate_limited(ip):
+            log.warning(f"Rate limit alcanzado | ip={ip}")
+            return jsonify({
+                "ok":  False,
+                "out": "Demasiadas peticiones. Espera un momento."
+            }), 429
         return f(*args, **kwargs)
     return wrapper
 
+# â”€â”€ Rutas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#  Rutas
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 @app.route("/")
 def home():
-    return render_template("index.html", comandos=COMANDOS_PERMITIDOS)
+    return render_template("index.html")
+
+
+@app.route("/commands", methods=["GET"])
+def list_commands():
+    """Devuelve la lista de comandos disponibles sin revelar los binarios reales."""
+    cmds = {key: val["desc"] for key, val in ALLOWED_COMMANDS.items()}
+    return jsonify({"commands": cmds})
 
 
 @app.route("/cmd", methods=["POST"])
-@rate_limited
+@rate_limit
 def cmd():
+    ip = request.remote_addr or "unknown"
+
+    # 1. Validar que el body es JSON
     if not request.is_json:
-        abort(400)
+        return jsonify({"ok": False, "out": "Se esperaba JSON."}), 400
 
-    clave = request.json.get("cmd", "").strip()
+    data = request.get_json(silent=True) or {}
+    key  = data.get("cmd", "")
 
-    if clave not in COMANDOS_PERMITIDOS:
-        logger.warning("Intento de comando no permitido: %r desde %s", clave, request.remote_addr)
-        return jsonify({"error": "Comando no permitido."}), 403
+    # 2. Validar tipo y longitud
+    if not isinstance(key, str) or len(key) > 32:
+        log.warning(f"Input invalido | ip={ip} | key={repr(key)[:50]}")
+        return jsonify({"ok": False, "out": "Input invalido."}), 400
 
-    binario, descripcion = COMANDOS_PERMITIDOS[clave]
+    # 3. Verificar lista blanca
+    if key not in ALLOWED_COMMANDS:
+        log.warning(f"Comando no permitido | ip={ip} | key={key!r}")
+        return jsonify({"ok": False, "out": f"Comando '{key}' no permitido."}), 403
 
-    logger.info("Ejecutando '%s' solicitado por %s", clave, request.remote_addr)
+    entry   = ALLOWED_COMMANDS[key]
+    timeout = entry["timeout"]
 
+    log.info(f"Ejecutando | ip={ip} | key={key} | cmd={entry['cmd']}")
+
+    # 4. Ejecutar SIN shell=True â€” proteccion real contra injection
     try:
-        resultado = subprocess.run(
-            binario,
-            shell=False,          # â† NUNCA shell=True con input de usuario
+        result = subprocess.run(
+            entry["cmd"],
+            shell=False,
             capture_output=True,
             text=True,
-            timeout=8,
+            timeout=timeout,
         )
-        salida = resultado.stdout or resultado.stderr or "(sin salida)"
+        output = result.stdout or result.stderr or "(sin salida)"
+        return jsonify({"ok": True, "out": output, "code": result.returncode})
+
     except subprocess.TimeoutExpired:
-        salida = "El comando tardÃ³ demasiado y fue cancelado."
+        log.error(f"Timeout | ip={ip} | key={key}")
+        return jsonify({"ok": False, "out": f"Timeout ({timeout}s) alcanzado."}), 200
+
     except FileNotFoundError:
-        salida = f"El comando '{binario[0]}' no estÃ¡ disponible en este sistema."
+        log.error(f"Binario no encontrado | key={key} | cmd={entry['cmd']}")
+        return jsonify({"ok": False, "out": "Comando no disponible en este sistema."}), 200
+
     except Exception:
-        logger.exception("Error inesperado ejecutando '%s'", clave)
-        salida = "Error interno. Revisa los logs del servidor."
-
-    return jsonify({"out": salida, "cmd": clave, "desc": descripcion})
+        log.exception(f"Error inesperado | ip={ip} | key={key}")
+        return jsonify({"ok": False, "out": "Error interno del servidor."}), 500
 
 
-@app.route("/cmds", methods=["GET"])
-def listar_comandos():
-    """Devuelve la lista de comandos disponibles (sin exponer los binarios reales)."""
-    return jsonify({
-        k: desc for k, (_, desc) in COMANDOS_PERMITIDOS.items()
-    })
+# â”€â”€ Arranque compatible con Railway â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-#  Arranque
-# â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 if __name__ == "__main__":
-    # En producciÃ³n usar Gunicorn: gunicorn -w 4 app:app
-    app.run(host="0.0.0.0", port=8080, debug=False)
+    port = int(os.environ.get("PORT", 8080))  # Railway inyecta PORT automaticamente
+    app.run(
+        host="0.0.0.0",  # Obligatorio en Railway
+        port=port,
+        debug=False,
+               )

@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Kali Remote Terminal</title>
+</head>
+<body style="background:black;color:#00ff00;font-family:monospace;">
+<h3>root@kali:~#</h3>
+
+<input id="cmd" style="width:80%;background:black;color:lime;border:1px solid lime;">
+<button onclick="run()">Run</button>
+
+<pre id="out"></pre>
+
+<script>
+async function run(){
+ let c = document.getElementById("cmd").value;
+ document.getElementById("out").innerText += "\n$ " + c;
+
+ let r = await fetch("/cmd", {
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body: JSON.stringify({cmd:c})
+ });
+ let j = await r.json();
+ document.getElementById("out").innerText += "\n" + j.out;
+}
+</script>
+</body>
+</html>

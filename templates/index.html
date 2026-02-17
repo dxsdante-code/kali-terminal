@@ -1,29 +1,352 @@
 <!DOCTYPE html>
-<html>
+<html lang="es">
 <head>
-<title>Kali Remote Terminal</title>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SysPanel · Monitor de Sistema</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;600&family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #080c10;
+      --surface:   #0d1117;
+      --panel:     #111820;
+      --border:    #1e2d3d;
+      --border2:   #243447;
+      --green:     #00ff88;
+      --green-dim: #00cc6a;
+      --cyan:      #00cfff;
+      --amber:     #ffb800;
+      --red:       #ff4757;
+      --text:      #c8d8e8;
+      --text-dim:  #5a7a99;
+      --text-faint:#2a4a66;
+      --font-mono: 'Fira Code', monospace;
+      --font-ui:   'Syne', sans-serif;
+    }
+
+    html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--font-mono); overflow-x: hidden; }
+
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.08) 2px, rgba(0,0,0,0.08) 4px);
+      pointer-events: none; z-index: 9999;
+    }
+
+    body::after {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        radial-gradient(ellipse 80% 60% at 10% 20%, rgba(0,255,136,0.04) 0%, transparent 60%),
+        radial-gradient(ellipse 60% 80% at 90% 80%, rgba(0,207,255,0.04) 0%, transparent 60%);
+      pointer-events: none; z-index: 0;
+    }
+
+    .layout {
+      position: relative; z-index: 1; min-height: 100vh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      grid-template-columns: 260px 1fr;
+      grid-template-areas: "header header" "sidebar main" "footer footer";
+    }
+
+    header {
+      grid-area: header;
+      border-bottom: 1px solid var(--border);
+      padding: 0 28px; height: 58px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: rgba(13,17,23,0.95); backdrop-filter: blur(8px);
+      position: sticky; top: 0; z-index: 100;
+    }
+
+    .logo {
+      font-family: var(--font-ui); font-size: 1.25rem; font-weight: 800;
+      letter-spacing: -0.02em; color: #fff;
+      display: flex; align-items: center; gap: 10px;
+    }
+
+    .logo-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: var(--green); box-shadow: 0 0 8px var(--green);
+      animation: pulse 2s ease-in-out infinite;
+    }
+
+    @keyframes pulse { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.4;transform:scale(0.8)} }
+
+    .header-meta { font-size: 0.7rem; color: var(--text-dim); text-align: right; line-height: 1.6; }
+    .header-meta span { color: var(--cyan); }
+
+    aside {
+      grid-area: sidebar; border-right: 1px solid var(--border);
+      background: var(--surface); padding: 24px 0;
+      position: sticky; top: 58px; height: calc(100vh - 58px); overflow-y: auto;
+    }
+
+    .sidebar-label {
+      font-size: 0.6rem; font-weight: 600; letter-spacing: 0.15em;
+      color: var(--text-faint); text-transform: uppercase; padding: 0 20px 10px;
+    }
+
+    .cmd-btn {
+      width: 100%; display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px 20px; background: none; border: none;
+      border-left: 2px solid transparent; cursor: pointer; text-align: left;
+      transition: all 0.15s ease;
+    }
+
+    .cmd-btn:hover { background: rgba(0,255,136,0.04); border-left-color: var(--green-dim); }
+    .cmd-btn.active { background: rgba(0,255,136,0.07); border-left-color: var(--green); }
+
+    .cmd-icon { font-size: 0.85rem; width: 20px; text-align: center; flex-shrink: 0; margin-top: 1px; }
+    .cmd-info { flex: 1; }
+    .cmd-name { font-size: 0.78rem; font-weight: 500; color: var(--text); display: block; margin-bottom: 2px; }
+    .cmd-btn.active .cmd-name { color: var(--green); }
+    .cmd-desc { font-size: 0.65rem; color: var(--text-dim); display: block; line-height: 1.4; }
+    .cmd-arrow { font-size: 0.7rem; color: var(--text-faint); align-self: center; opacity: 0; transition: opacity 0.15s; }
+    .cmd-btn:hover .cmd-arrow, .cmd-btn.active .cmd-arrow { opacity: 1; color: var(--green); }
+
+    main {
+      grid-area: main; padding: 28px;
+      display: flex; flex-direction: column; gap: 20px;
+      min-height: calc(100vh - 58px);
+    }
+
+    .status-bar {
+      display: flex; align-items: center; gap: 16px;
+      padding: 10px 16px; background: var(--panel);
+      border: 1px solid var(--border); border-radius: 6px;
+      font-size: 0.68rem; color: var(--text-dim); flex-wrap: wrap;
+    }
+
+    .status-item { display: flex; align-items: center; gap: 6px; }
+    .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); box-shadow: 0 0 5px var(--green); }
+    .status-dot.amber { background: var(--amber); box-shadow: 0 0 5px var(--amber); }
+
+    .terminal {
+      flex: 1; background: var(--panel); border: 1px solid var(--border);
+      border-radius: 8px; display: flex; flex-direction: column;
+      overflow: hidden; min-height: 420px;
+    }
+
+    .terminal-bar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 16px; background: rgba(0,0,0,0.3);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+
+    .t-dot { width: 10px; height: 10px; border-radius: 50%; }
+    .t-dot.r{background:#ff5f56} .t-dot.y{background:#ffbd2e} .t-dot.g{background:#27c93f}
+
+    .terminal-title { font-size: 0.68rem; color: var(--text-dim); margin-left: 6px; }
+    .terminal-title span { color: var(--cyan); }
+
+    .terminal-body {
+      flex: 1; padding: 20px; overflow-y: auto;
+      font-size: 0.78rem; line-height: 1.7; color: var(--green);
+    }
+
+    .line-prompt { color: var(--text-dim); user-select: none; }
+    .line-cmd { color: var(--cyan); font-weight: 500; }
+
+    .line-out {
+      color: var(--text); white-space: pre-wrap; word-break: break-word;
+      animation: fadeIn 0.3s ease;
+    }
+
+    @keyframes fadeIn { from{opacity:0;transform:translateY(4px)} to{opacity:1;transform:translateY(0)} }
+
+    .line-error { color: var(--red); }
+    .line-sep { border: none; border-top: 1px solid var(--border); margin: 12px 0; }
+    .line-meta { font-size: 0.65rem; color: var(--text-dim); margin-bottom: 8px; }
+
+    .loader { display: none; align-items: center; gap: 8px; color: var(--amber); font-size: 0.72rem; padding: 4px 0; }
+    .loader.show { display: flex; }
+    .loader-dots span { display: inline-block; animation: blink 1.2s ease-in-out infinite; }
+    .loader-dots span:nth-child(2){animation-delay:0.2s} .loader-dots span:nth-child(3){animation-delay:0.4s}
+    @keyframes blink { 0%,100%{opacity:0.2} 50%{opacity:1} }
+
+    .empty-state {
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; height: 100%; gap: 12px;
+      color: var(--text-faint); padding: 40px; text-align: center;
+    }
+
+    .empty-ascii { font-size: 0.65rem; line-height: 1.4; color: var(--border2); white-space: pre; }
+    .empty-hint { font-size: 0.72rem; margin-top: 8px; }
+
+    footer {
+      grid-area: footer; border-top: 1px solid var(--border);
+      padding: 10px 28px; display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.62rem; color: var(--text-faint); background: var(--surface);
+    }
+
+    .rate-bar { width: 80px; height: 4px; background: var(--border); border-radius: 2px; overflow: hidden; }
+    .rate-fill { height: 100%; background: var(--green); width: 0%; transition: width 0.4s ease; border-radius: 2px; }
+
+    ::-webkit-scrollbar{width:4px} ::-webkit-scrollbar-track{background:transparent}
+    ::-webkit-scrollbar-thumb{background:var(--border2);border-radius:2px}
+    ::-webkit-scrollbar-thumb:hover{background:var(--text-dim)}
+
+    @media(max-width:680px){
+      .layout{grid-template-columns:1fr;grid-template-areas:"header""main""footer"}
+      aside{display:none} .sidebar-mobile{display:flex !important}
+    }
+
+    .sidebar-mobile { display: none; gap: 8px; flex-wrap: wrap; }
+    .m-btn {
+      font-family: var(--font-mono); font-size: 0.68rem; padding: 6px 12px;
+      background: var(--panel); border: 1px solid var(--border);
+      color: var(--text-dim); border-radius: 4px; cursor: pointer; transition: all 0.15s;
+    }
+    .m-btn:hover { border-color: var(--green); color: var(--green); }
+  </style>
 </head>
-<body style="background:black;color:#00ff00;font-family:monospace;">
-<h3>root@kali:~#</h3>
+<body>
+<div class="layout">
 
-<input id="cmd" style="width:80%;background:black;color:lime;border:1px solid lime;">
-<button onclick="run()">Run</button>
+  <header>
+    <div class="logo">
+      <div class="logo-dot"></div>
+      SysPanel
+    </div>
+    <div class="header-meta">
+      Monitor de sistema · <span id="clock">--:--:--</span><br>
+      Acceso seguro — solo comandos permitidos
+    </div>
+  </header>
 
-<pre id="out"></pre>
+  <aside>
+    <div class="sidebar-label">// comandos disponibles</div>
+    {% set icons = {
+      'fecha':'📅','uptime':'⏱','espacio':'💾','memoria':'🧠',
+      'procesos':'⚙️','red':'🌐','kernel':'🔧','cpu':'🖥','whoami':'👤','env':'🔑'
+    } %}
+    {% for clave, (binario, desc) in comandos.items() %}
+    <button class="cmd-btn" data-cmd="{{ clave }}" onclick="ejecutar('{{ clave }}', this)">
+      <span class="cmd-icon">{{ icons.get(clave, '▸') }}</span>
+      <span class="cmd-info">
+        <span class="cmd-name">{{ clave }}</span>
+        <span class="cmd-desc">{{ desc }}</span>
+      </span>
+      <span class="cmd-arrow">▸</span>
+    </button>
+    {% endfor %}
+  </aside>
+
+  <main>
+    <div class="status-bar">
+      <div class="status-item"><div class="status-dot"></div>Servidor activo</div>
+      <div class="status-item"><div class="status-dot amber"></div>Rate limit: <span id="rate-count">0</span>/10 por minuto</div>
+      <div class="status-item" style="margin-left:auto;color:var(--text-faint)">shell=False &nbsp;·&nbsp; allowlist &nbsp;·&nbsp; sin root</div>
+    </div>
+
+    <div class="sidebar-mobile">
+      {% for clave in comandos %}
+      <button class="m-btn" onclick="ejecutar('{{ clave }}', this)" data-cmd="{{ clave }}">{{ clave }}</button>
+      {% endfor %}
+    </div>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <div class="t-dot r"></div><div class="t-dot y"></div><div class="t-dot g"></div>
+        <div class="terminal-title">syspanel@localhost <span>~</span></div>
+      </div>
+      <div class="terminal-body" id="output">
+        <div class="empty-state" id="empty">
+          <div class="empty-ascii">┌─────────────────┐
+│  &gt; SysPanel v2  │
+│  shell=False ✓  │
+│  allowlist  ✓   │
+└─────────────────┘</div>
+          <div class="empty-hint">Selecciona un comando del panel lateral</div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div>SysPanel · Flask + subprocess seguro</div>
+    <div style="display:flex;align-items:center;gap:8px">
+      Peticiones
+      <div class="rate-bar"><div class="rate-fill" id="rate-bar"></div></div>
+      <span id="footer-count">0/10</span>
+    </div>
+  </footer>
+
+</div>
 
 <script>
-async function run(){
- let c = document.getElementById("cmd").value;
- document.getElementById("out").innerText += "\n$ " + c;
+  const clockEl = document.getElementById('clock');
+  function tick(){ clockEl.textContent = new Date().toLocaleTimeString('es-ES'); }
+  tick(); setInterval(tick, 1000);
 
- let r = await fetch("/cmd", {
-   method:"POST",
-   headers:{"Content-Type":"application/json"},
-   body: JSON.stringify({cmd:c})
- });
- let j = await r.json();
- document.getElementById("out").innerText += "\n" + j.out;
-}
+  let peticiones = 0;
+
+  function updateRateUI(){
+    document.getElementById('rate-count').textContent = peticiones;
+    document.getElementById('footer-count').textContent = `${peticiones}/10`;
+    document.getElementById('rate-bar').style.width = `${Math.min(peticiones/10*100,100)}%`;
+  }
+
+  function clearActive(){
+    document.querySelectorAll('.cmd-btn,.m-btn').forEach(b => b.classList.remove('active'));
+  }
+
+  function escapeHtml(t){
+    return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  let loaderEl = null;
+
+  function showLoader(clave){
+    const out = document.getElementById('output');
+    const empty = document.getElementById('empty');
+    if(empty) empty.remove();
+    loaderEl = document.createElement('div');
+    loaderEl.className = 'loader show';
+    loaderEl.innerHTML = `<span>▸</span><span>ejecutando <span style="color:var(--cyan)">${clave}</span></span><span class="loader-dots"><span>.</span><span>.</span><span>.</span></span>`;
+    out.appendChild(loaderEl);
+    out.scrollTop = out.scrollHeight;
+  }
+
+  function hideLoader(){ if(loaderEl){ loaderEl.remove(); loaderEl = null; } }
+
+  function renderEntrada(clave, desc, salida, isError){
+    const out = document.getElementById('output');
+    const ts = new Date().toLocaleTimeString('es-ES');
+    const wrapper = document.createElement('div');
+    wrapper.innerHTML = `
+      <div class="line-meta">[${ts}] — ${escapeHtml(desc)}</div>
+      <div><span class="line-prompt">syspanel@localhost:~$ </span><span class="line-cmd">${escapeHtml(clave)}</span></div>
+      <div class="line-out ${isError?'line-error':''}">${escapeHtml(salida)}</div>
+      <hr class="line-sep">`;
+    out.appendChild(wrapper);
+    out.scrollTop = out.scrollHeight;
+  }
+
+  async function ejecutar(clave, btn){
+    clearActive(); btn.classList.add('active');
+    peticiones++; updateRateUI();
+    showLoader(clave);
+    try{
+      const resp = await fetch('/cmd',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({cmd: clave})
+      });
+      const data = await resp.json();
+      hideLoader();
+      if(data.error){ renderEntrada(clave, 'Error', data.error, true); }
+      else { renderEntrada(clave, data.desc, data.out, false); }
+    } catch(err){
+      hideLoader();
+      renderEntrada(clave, 'Error de red', `No se pudo conectar: ${err.message}`, true);
+    }
+  }
 </script>
 </body>
-</html>
+         </html>
+         

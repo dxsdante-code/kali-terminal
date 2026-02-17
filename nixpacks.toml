@@ -1,0 +1,27 @@
+[phases.setup]
+nixPkgs = ["python311", "gcc"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "gunicorn app:app --bind 0.0.0.0:$PORT"
+```
+
+---
+
+Con esto ya no necesitas el `Procfile`, el `nixpacks.toml` define el comando de arranque directamente. Tu estructura final debe quedar así:
+```
+tu-proyecto/
+├── app.py
+├── requirements.txt
+├── runtime.txt
+├── nixpacks.toml
+└── templates/
+    └── index.html
+```
+
+Y el `requirements.txt` asegúrate que tenga exactamente:
+```
+flask
+gunicorn
